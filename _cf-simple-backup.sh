@@ -14,6 +14,7 @@ PROGRAM=${PROGRAM:-$(basename $0)}
 PROGRAM_DIR=$(cd $(dirname "$0"); pwd)
 NAME=$PROGRAM
 DESC="cf simple backup"
+PROCESS_TIME_LIMIT=600
 
 # Load the library and load the configuration file if it exists
 REALPATH=$(readlink "$PROGRAM")
@@ -31,8 +32,8 @@ fi
 . $_COMMON
 
 # Program variables
-RSYNC="sudo rsync -arzhv --delete"
-MOUNT_NFS="sudo mount -t nfs -o soft,nolock"
+RSYNC="sudo rsync -arzhv -x -AX --delete"
+MOUNT_NFS="sudo mount -t nfs -o ro,soft,nolock"
 UMOUNT="sudo umount -f"
 MOUNT="sudo mount"
 BOSH="bosh"
@@ -70,35 +71,50 @@ bosh_info() {
     local user="$1"
     local host="$2"
     local pass="$3"
-    local dep="$4"
-    local infor="$5"
+    local config="$4"
+    local dep="$5"
+    local infor="$6"
+    local manifest="$7"
 
-    echo_log "Targeting microbosh ... "
-    $BOSH -u zzz -p zzz target "${host}" >> $PROGRAM_LOG 2>&1 
-    debug_log "Login microbosh ... "
-    $BOSH login ${user} ${pass} >> $PROGRAM_LOG 2>&1
+    echon_log "Targeting and login microbosh ${host} ... "
+    $BOSH -c "${config}" -u zzz -p zzz target "${host}" >> $PROGRAM_LOG 2>&1 
+    $BOSH -c "${config}" login ${user} ${pass} >> $PROGRAM_LOG 2>&1
     rvalue=$?
     if [ $rvalue  != 0 ]; then
+        echo "failed!"
     	error_log "Error, bosh login failed!"
         return $rvalue
     fi
-    debug_log "Bosh status ... "
-    $BOSH status >> $PROGRAM_LOG 2>&1
+    echo "done!"
+    echon_log "Getting bosh status ... "
+    $BOSH -c "${config}" status >> $PROGRAM_LOG 2>&1
     rvalue=$?
     if [ $rvalue  != 0 ]; then
+        echo "failed!"
     	error_log "Error, bosh status failed!"
         return $rvalue
     fi
-    debug_log "Bosh vms ... "
-    $BOSH vms ${dep} | awk '/ postgres_| nfs_/{ print $2"|"$8 }' > "${infor}" 2>&1
+    echo "ok"
+    debug_log "Getting bosh vms: "
+    $BOSH -c "${config}" vms ${dep} | awk '/ postgres_| nfs_/{ print $2"|"$8 }' > "${infor}" 2>&1
     rvalue=$?
     if [ $rvalue  != 0 ]; then
         rm -f "${infor}"
     	error_log "Error, bosh vms failed!"
         return $rvalue
     fi
-    debug_log "Bosh logout ... "
-    $BOSH logout >> $PROGRAM_LOG 2>&1
+    cat "${infor}" >> $PROGRAM_LOG
+    echon_log "Getting bosh manifest for ${dep} ... "
+    $BOSH -c "${config}" download manifest "${dep}" "${manifest}" >> $PROGRAM_LOG  2>&1
+    rvalue=$?
+    if [ $rvalue  != 0 ]; then
+        echo "failed!"
+    	error_log "Error, bosh download manifest failed!"
+        return $rvalue
+    fi
+    echo "$(basename ${manifest})"
+    debug_log "Bosh logout "
+    $BOSH -c "${config}" logout >> $PROGRAM_LOG 2>&1
     return $?
 }
 
@@ -106,7 +122,7 @@ bosh_info() {
 dbs_dump() {
     local host="$1"
     local dst="$2"
-    local dbs="$3"  # "db1:user:pass db2:user:pass"
+    local dbs="$3"
 
     local rvalue=0
     local user
@@ -115,7 +131,7 @@ dbs_dump() {
     local d
     local dba
 
-    echo_log "Starting DB backup. Starting processes:"
+    echo_log "Starting DB backup."
     for d in ${dbs}; do
         user=$(echo "$d" | cut -d':' -f 2)
         pass=$(echo "$d" | cut -d':' -f 3)
@@ -130,7 +146,7 @@ dbs_dump() {
     	     error_log "DB dump failed!"
              return $rvalue
         fi
-        echo "done"
+        echo "done!"
     done
     return $rvalue
 }
@@ -138,7 +154,7 @@ dbs_dump() {
 
 nfs_files() {
     local host="$1"
-    local remote="$2" #/var/vcap/store
+    local remote="$2"
     local dst="$3"
     local filelist="$4"
 
@@ -152,12 +168,12 @@ nfs_files() {
     if [ $rvalue -eq 0 ]; then
         echo "done!"
     else
-        echo "failed"
         error_log "Mount failed!"
         return $rvalue
     fi
     echon_log "Copying files with rsync ... "
-    $RSYNC --include-from="${filelist}" --log-file=${logfile} "${target}" "${dst}/" >>$PROGRAM_LOG 2>&1
+    # $RSYNC --filter="merge ${filelist}" --log-file=${logfile} "${target}/" "${dst}/" >>$PROGRAM_LOG 2>&1
+    $RSYNC --include-from="${filelist}" --log-file=${logfile} "${target}/" "${dst}/" >>$PROGRAM_LOG 2>&1
     rvalue=$?
     cat "${logfile}" >> $PROGRAM_LOG
     if [ $rvalue -eq 0 ]; then
@@ -192,11 +208,11 @@ archive() {
     echon_log "Adding extra files: "
     for f in ${added}; do
         echo -n "${f}"
-        cp -v "${PROGRAM_DIR}/${f}" "${ouput}/" >>$PROGRAM_LOG 2>&1 || echo "(failed)" && echo " "
+        cp -v "${f}" "${dst}/" >>$PROGRAM_LOG 2>&1 || echo -n "(failed) " && echo -n " "
     done
     echo
     echon_log "Creating tgz $output ... "
-    $TAR ${ouput} ${dst} 2>&1 | tee -a $PROGRAM_LOG > "${logfile}"
+    $TAR ${output} ${dst} 2>&1 | tee -a $PROGRAM_LOG > "${logfile}"
     rvalue=${PIPESTATUS[0]}
     if [ $rvalue -eq 0 ]; then
         echo "done!"
@@ -207,6 +223,7 @@ archive() {
     rm -f "${logfile}"
     return $rvalue
 }
+
 
 
 backup() {
@@ -220,64 +237,80 @@ backup() {
     local output="$8"
     local addlist="$9"
 
-    local rvalue
+    local rvalue=0
+    local currentdate="$(date '+%Y%m%d%H%M%S')"
     local remote="/var/vcap/store"
-    local tmpfile="/tmp/${PROGRAM}_$$_$(date '+%Y%m%d%H%M%S').rsync.list"
-    local hostsfile="/tmp/${PROGRAM}_$$_$(date '+%Y%m%d%H%M%S').hosts"
+    local tmpfile="/tmp/${PROGRAM}_$$_${currentdate}.rsync.list"
+    local hostsfile="/tmp/${PROGRAM}_$$_${currentdate}.hosts"
+    local manifest="${cache}/cf_manifest_${currentdate}.yml"
+    local boshconfig="${cache}/_bosh_config_${currentdate}.cfg"
     local dbdir="${cache}/dbs/"
-    local dbdump="${dbdir}/postgres_$(date '+%Y%m%d%H%M%S').dump"
+    local dbdump="${dbdir}/postgres_${currentdate}.dump"
+    local rsynccache="${cache}/store/"
     local nfshost
     local dbhost
 
-    bosh_info "${user}" "${host}" "${PASS}" "${deployment}" "${hostsfile}"
+    debug_log "Deleting old bosh config and manifest files ..."
+    rm -f "${cache}/"cf_manifest_*.yml >>$PROGRAM_LOG 2>&1
+    rm -f "${cache}/"_bosh_config_*.cfg >>$PROGRAM_LOG 2>&1
+    echo $(date '+%Y%m%d%H%M%S') > "${cache}/_date.control"
+    bosh_info "${user}" "${host}" "${pass}" "${boshconfig}" "${deployment}" "${hostsfile}" "${manifest}"
     rvalue=$?
-    if [ $rvalue != 0 ] || [ ! -f "${hostsfile}" ]; then
+    if [ "$rvalue" != "0" ] || [ ! -e "${hostsfile}" ]; then
         rm -f "${hostsfile}"
         return 1
-    if
-    echo_log "Locating db and nfs hosts ..."
+    fi
+    echon_log "Locating db and nfs hosts ... "
     dbhost=$(grep -e "^postgres_" "${hostsfile}" | head -n 1 | cut -d'|' -f 2)
     nfshost=$(grep -e "^nfs_" "${hostsfile}" | head -n 1 | cut -d'|' -f 2)
     rm -f "${hostsfile}"
     if [ -z "${dbhost}" ] || [ -z "${nfshost}" ]; then
+        echo "failed!"
         error_log "unable to find nfs and db host on cf environment"
         return 1
     fi
-    debug_log "Pinging hosts ..."
-    $PING $dbhost >>$PROGRAM_LOG 2>&1 && $PING $nfshost >>$PROGRAM_LOG 2>&1
+    echo "done!"
+    echon_log "Pinging ${dbhost} and ${nfshost} ... "
+    $PING ${dbhost} >>$PROGRAM_LOG 2>&1 && $PING ${nfshost} >>$PROGRAM_LOG 2>&1
     rvalue=$?
     if [ $rvalue != 0 ]; then
+        echo "failed"
         error_log "unable to reach db or nfs hosts!"
         return 1
-    if
-    echon_log "Checking if ${nfshost}:${remote} is already mounted ... "
+    fi
+    echo "ok"
+    echon_log "Checking if ${nfshost}:${remote} is mounted ... "
     $MOUNT | grep -q -e "${nfshost}:${remote}"
     rvalue=$?
     if [ $rvalue == 0 ]; then
         echo "mounted!"
         error_log "aborting backup ... is it already mounted?, is another backup running?"
         return 1
-    if
+    fi
     echo "ok, not mounted"
     debug_log "Removing old db backups ... "
     rm -rf "${dbdir}" >>$PROGRAM_LOG 2>&1
     debug_log "Creating backup dir ... "
     mkdir -p "${dbdir}" >>$PROGRAM_LOG 2>&1
     debug_log "Preparing list of files ... "
-    get_list "${filelist}" | tee -a $PROGRAM_LOG > ${tmpfile}
+    get_list "${filelist}" | tee -a $PROGRAM_LOG > $tmpfile
     # starting main things
-    dbs_dump ${dbhost} "${dbdump}" "${dbs}" 
+    dbs_dump ${dbhost} "${dbdump}" "${dbs}"
     rvalue=$?
     if [ $rvalue != 0 ]; then
         rm -f "${tmpfile}"
         return $rvalue
     fi
-    nfs_files ${nfshost} "${remote}" "${cache}" "${tmpfile}"
+    nfs_files ${nfshost} "${remote}" "${rsynccache}" "${tmpfile}"
     rvalue=$?
-    if [ $rvalue -eq 0 ]; then
-        archive "${cache}" "${output}" "${addlist}"
+    echo $(date '+%Y%m%d%H%M%S') >> "${cache}/_date.control"
+    if [ $rvalue == 0 ] && [ ! -z "${output}" ]; then
+        archive "${cache}" "${output}" "$(get_list ${addlist})"
         rvalue=$?
     fi
+    debug_log "Copying $PROGRAM_LOG ..."
+    rm -f "${cache}/"*.log
+    cp -v "$PROGRAM_LOG" "${cache}/" >>$PROGRAM_LOG 2>&1
     rm -f "${tmpfile}"
     return $rvalue
 }
