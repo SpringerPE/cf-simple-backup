@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Script with common procedures and funtions for shell programming 
-# (c) 2013 Jose Riguera <jose.riguera@springer.com>
+# Script with common procedures and funtions for shell programming
+# (c) 2014 Jose Riguera <jose.riguera@springer.com>
 # Licensed under GPLv3
 
 # LOAD with:
@@ -15,16 +15,17 @@
 
 
 # Global Variables
-UUENCODE=uuencode
-PERL=perl
-MAIL=mail
-LOGGER=logger
-
+UUENCODE=${UUENCODE:-'uuencode'}
+PERL=${PERL:-'perl'}
+MAIL=${MAIL:-'mail'}
+LOGGER=${LOGGER:-'logger'}
+SSH=${SSH:-'ssh -n'}
+SSH_OPTIONS=${SSH_OPTIONS:-'ConnectTimeout=30 BatchMode=yes'}
 
 ##############################
 # Print a message
 echo_log() {
-   $LOGGER -p local0.notice -t ${PROGRAM} "$@"
+   $LOGGER -p local0.notice -t ${PROGRAM} -- "$@"
    echo "--$PROGRAM $(date '+%Y-%m-%d %T'): $@" | tee -a $PROGRAM_LOG
 }
 
@@ -32,7 +33,7 @@ echo_log() {
 ##############################
 # Print a message without \n at the end
 echon_log() {
-   $LOGGER -p local0.notice -t ${PROGRAM} "$@"
+   $LOGGER -p local0.notice -t ${PROGRAM} -- "$@"
    echo -n "--$PROGRAM $(date '+%Y-%m-%d %T'): $@" | tee -a $PROGRAM_LOG
 }
 
@@ -40,7 +41,7 @@ echon_log() {
 ##############################
 # error
 error_log() {
-    $LOGGER -p local0.err -t ${PROGRAM} "$@"
+    $LOGGER -p local0.err -t ${PROGRAM} -- "$@"
     echo "--$PROGRAM $(date '+%Y-%m-%d %T') ERROR: $@" | tee -a $PROGRAM_LOG
 }
 
@@ -48,12 +49,12 @@ error_log() {
 ##############################
 # DEBUG
 debug_log() {
-   $LOGGER -p local0.debug -t ${PROGRAM} "$@"
+   $LOGGER -p local0.debug -t ${PROGRAM} -- "$@"
     if [ z"$DEBUG" == z"0" ]; then
         echo "--$PROGRAM $(date '+%Y-%m-%d %T'): $@" >> $PROGRAM_LOG
     else
         echo "--$PROGRAM $(date '+%Y-%m-%d %T'): $@" | tee -a $PROGRAM_LOG
-    fi    
+    fi
 }
 
 
@@ -61,7 +62,7 @@ debug_log() {
 # Print a message and exit with error
 die() {
     error_log "$@"
-    
+
     exit 1
 }
 
@@ -101,7 +102,7 @@ sudo_check() {
     if [ $(id -u -nr) != $user ]; then
         debug_log "Running: sudo -i -u $user -- $fullname $@"
         exec sudo -i -p "You are not $user, trying to change to that user with sudo ... type your password: " \
-              -u $user -- $fullname $PROGRAM_OPTS 
+              -u $user -- $fullname $PROGRAM_OPTS
         rvalue=$?
         if [ "$rvalue" != "0" ]; then
             echo_log "You must be $user or have sudo permissions to run this script."
@@ -115,8 +116,8 @@ sudo_check() {
 #################################
 # Load script configuration
 # Search for a suitable configuration file for this script.
-# This function will check if the given script has an .conf file in the same 
-# path. If not, it will follow the symlink and try again. 
+# This function will check if the given script has an .conf file in the same
+# path. If not, it will follow the symlink and try again.
 # If there is no config file, it returns failure.
 # It also prints the posible scripts names. Example:
 # find_config_file $0 > /dev/null && [ -f $CONFIG_FILE ] && . $CONFIG_FILE || die "Can't find conf"
@@ -124,7 +125,7 @@ sudo_check() {
 find_config_file() {
     local program=$(basename $1)
     local program_dir=$(cd $(dirname "$1"); pwd)
-    
+
     local fullname
 
     # Get config file
@@ -136,7 +137,7 @@ find_config_file() {
 	    return 0
     else
   	    debug_log "$PROGRAM_CONF: not found!"
-    fi	
+    fi
     # If not, check if script is a link and follow it
     fullname=${program_dir}/${program}
     if [ ! -h $fullname ]; then
@@ -249,31 +250,35 @@ exec_launcher() {
 exec_sudo_host() {
     local user="$1"; shift
     local server="$1"; shift
-    
-    local sshcom="ssh -n -o ConnectTimeout=30 -o BatchMode=yes"
+
     local logfile="/tmp/${PROGRAM%%.sh}_$$_$(date '+%Y%m%d%H%M%S').out"
+    local sshoptions=""
     local rvalue
-    
+
+    for o in ${SSH_OPTIONS}; do
+        sshoptions="${sshoptions} -o ${o}"
+    done
+
     echo "* -- START -- PID=$$" >> $logfile
     echo "* -- $(date) --" >> $logfile
     if [ $(id -u -nr) != $user ]; then
-        echo "* -- sudo -i -u $user -- $sshcom  ${user}@${server} $@ --" >> $logfile
+        echo "* -- sudo -i -u $user -- ${SSH} $sshoptions ${user}@${server} $@ --" >> $logfile
         sudo -i -u "$user" -p "Your are not $user, type your password: " -- \
-            ssh -n -o "ConnectTimeout=30" -o "BatchMode=yes" ${user}@${server} $@ | tee -a $logfile
+            $SSH ${sshoptions} ${user}@${server} $@ | tee -a $logfile
         rvalue=${PIPESTATUS[0]}
     else
-        echo "* -- $sshcom  ${user}@${server} $@ --" >> $logfile
-        ssh -n -o "ConnectTimeout=30" -o "BatchMode=yes" ${user}@${server} $@ | tee -a $logfile
+        echo "* -- $SSH ${sshoptions} ${user}@${server} $@ --" >> $logfile
+        $SSH ${sshoptions} ${user}@${server} $@ | tee -a $logfile
         rvalue=${PIPESTATUS[0]}
     fi
     echo "* -- END -- RC=$rvalue" >> $logfile
     if [ "$rvalue" != "0" ]; then
         echo_log "Error connecting through ssh:${user}@${server} $@"
         echo_log "Dumping log file:"
-        cat $logfile | tee -a $PROGRAM_LOG  
+        cat $logfile | tee -a $PROGRAM_LOG
     else
-        cat $logfile >> $PROGRAM_LOG  
-    fi    
+        cat $logfile >> $PROGRAM_LOG
+    fi
     rm -f $logfile
     return $rvalue
 }
@@ -282,27 +287,104 @@ exec_sudo_host() {
 exec_host() {
     local user="$1"; shift
     local server="$1"; shift
-    
-    local sshcom="ssh -n -o ConnectTimeout=30 -o BatchMode=yes"
+
     local logfile="/tmp/${PROGRAM%%.sh}_$$_$(date '+%Y%m%d%H%M%S').out"
+    local sshoptions=""
     local rvalue
-    
+
+    for o in ${SSH_OPTIONS}; do
+        sshoptions="${sshoptions} -o ${o}"
+    done
+
     echo "* -- START -- PID=$$" >> $logfile
     echo "* -- $(date) --" >> $logfile
-    echo "* -- $sshcom  ${user}@${server} $@ --" >> $logfile
-    ssh -n -o "ConnectTimeout=30" -o "BatchMode=yes" ${user}@${server} $@ | tee -a $logfile
+    echo "* -- ${SSH} ${sshoptions} ${user}@${server} $@ --" >> $logfile
+    ${SSH} ${sshoptions} ${user}@${server} $@ | tee -a $logfile
     rvalue=${PIPESTATUS[0]}
     echo "* -- END -- RC=$rvalue" >> $logfile
     if [ "$rvalue" != "0" ]; then
         echo_log "Error connecting through ssh:${user}@${server} $@"
         echo_log "Dumping log file:"
-        cat $logfile | tee -a $PROGRAM_LOG  
+        cat $logfile | tee -a $PROGRAM_LOG
     else
-        cat $logfile >> $PROGRAM_LOG  
-    fi    
+        cat $logfile >> $PROGRAM_LOG
+    fi
     rm -f $logfile
     return $rvalue
 }
+
+
+#################################
+# exec a process
+launch() {
+    local logfile="/tmp/${PROGRAM%%.sh}_$$_$(date '+%Y%m%d%H%M%S').out"
+    local rvalue
+
+    echo >> $PROGRAM_LOG
+    debug_log "Launching: '$@'"
+    # Exec process
+    echo "* -- START -- PID=$$" >> $logfile
+    (
+        echo "* Process environment was:" >> $logfile
+        env >> $logfile
+        echo >> $logfile
+        echo "* Command line of pid $$ was:" >> $logfile
+        echo "$@" >> $logfile
+        echo "* -- $(date) --" >> $logfile
+        {
+            exec time $@  2>&1;
+        } >> $logfile
+    ) &
+    pid=$!
+    wait $pid 2>/dev/null
+    rvalue=$?
+    echo "* -- END -- RC=$rvalue" >> $logfile
+    if [ "$rvalue" != "0" ]; then
+        echo_log "Error launching process: $@"
+        echo_log "Dumping log file:"
+        cat $logfile | tee -a $PROGRAM_LOG
+    else
+        cat $logfile >> $PROGRAM_LOG
+    fi
+    rm -f $logfile
+    return $rvalue
+}
+
+
+launch_out() {
+    local logfile="/tmp/${PROGRAM%%.sh}_$$_$(date '+%Y%m%d%H%M%S').log"
+    local rvalue
+
+    echo >> $PROGRAM_LOG
+    debug_log "Launching: '$@'"
+    # Exec process
+    echo "* -- START -- PID=$$" >> $logfile
+    (
+        echo "* Process environment was:" >> $logfile
+        env >> $logfile
+        echo >> $logfile
+        echo "* Command line of pid $$ was:" >> $logfile
+        echo "$@" >> $logfile
+        echo "* -- $(date) --" >> $logfile
+        {
+            exec time $@ ;
+        } 2>> $logfile
+    ) &
+    pid=$!
+    wait $pid 2>/dev/null
+    rvalue=$?
+    echo "* -- END -- RC=$rvalue" >> $logfile
+    if [ $rvalue != 0 ]; then
+        echo_log "Error launching process: $@"
+        echo_log "Dumping log file:"
+        cat $logfile | tee -a $PROGRAM_LOG
+    else
+        cat $logfile >> $PROGRAM_LOG
+    fi
+    rm -f $logfile
+    return $rvalue
+}
+
 
 #################################
 # Dumps the last 20 lines of a log file. For information.
@@ -407,7 +489,7 @@ get_reverse_list() {
 
 
 #################################
-# time difference between dates: days, hours, min, seconds 
+# time difference between dates: days, hours, min, seconds
 diff_dates() {
 	local date1=$1
 	local date2=$2
@@ -419,23 +501,22 @@ diff_dates() {
 		$hour = substr($ARGV[0], 8, 2);
 		$mday = substr($ARGV[0], 6, 2);
 		$mon =  substr($ARGV[0], 4 ,2);
-		$year = substr($ARGV[0], 0 ,4);                
+		$year = substr($ARGV[0], 0 ,4);
 		$min = 0 if (not defined $min);
 		$hour = 0 if (not defined $hour);
-		$time1 = timelocal(0, $min, $hour, $mday, $mon - 1, $year -1900); 
+		$time1 = timelocal(0, $min, $hour, $mday, $mon - 1, $year -1900);
 		if ($ARGV[1]) {
 		    $min = substr($ARGV[1], 10, 2);
 		    $hour = substr($ARGV[1], 8, 2);
 		    $mday = substr($ARGV[1], 6, 2);
 		    $mon =  substr($ARGV[1], 4 ,2);
-		    $year = substr($ARGV[1], 0 ,4);                
+		    $year = substr($ARGV[1], 0 ,4);
 		    $min = 0 if (not defined $min);
 		    $hour = 0 if (not defined $hour);
-		    $time2 = timelocal(0, $min, $hour, $mday, $mon - 1, $year -1900); 
+		    $time2 = timelocal(0, $min, $hour, $mday, $mon - 1, $year -1900);
 		} else {
 		    $time2=time;
 		}
-		
 		$diff = $time2 - $time1;
 		$diff_sec = $diff;
 		$diff_min = $diff / 60;
@@ -447,11 +528,11 @@ diff_dates() {
 
 
 ##############################
-# send-mail 
+# send-mail
 # For example:
 #
 # MAIL_MSG() {
-# 	cat <<EOF 
+# 	cat <<EOF
 # Estimado usuario,
 #
 # Se adjuntan las estadisticas del EOD de Murex solicitadas.
@@ -472,10 +553,10 @@ send_mail() {
     local subject="$2"
     local msg="$3"
     local bin="$4"
-    
+
     local rvalue
-    ( 
-	    type -t $msg > /dev/null && $msg || echo $msg
+    (
+	type -t $msg > /dev/null && $msg || echo $msg
         echo "--"
         echo "Report from $PROGRAM on $(hostname)"
         echo "--"
@@ -494,9 +575,9 @@ get_real_path() {
     local f="$1"
     local last
 
-    while [ -n "$f" ]; do 
-        last=$f; 
-        f=$(ls -l $f | sed -n 's/.* -> //p'); 
+    while [ -n "$f" ]; do
+        last=$f;
+        f=$(ls -l $f | sed -n 's/.* -> //p');
     done;
     echo $last
 }
@@ -523,7 +604,7 @@ wait_until() {
 # get a random string
 random_str() {
      local chars=$1
-     
+
      [ -z "$chars" ] && chars=10
      tr -cd '[:alnum:]' < /dev/urandom | head -c${chars}
 }
@@ -533,7 +614,7 @@ random_str() {
 kill_me() {
    debug_log "Killing me! ..."
    local parent=${PPID}
-   kill -9 $parent 
+   kill -9 $parent
    kill -9 $$
 }
 
