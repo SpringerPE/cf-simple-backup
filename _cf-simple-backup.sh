@@ -9,12 +9,15 @@
 DEBUG=0
 EXEC_USER=$USER                # normally must be an user or $USER to avoid 
                                # changuing the user automaticaly with sudo.
+PROCESS_TIME_LIMIT=600
+SSH='ssh -n'
+SSH_OPTIONS='ConnectTimeout=30 BatchMode=yes'
+
 # Other variables
 PROGRAM=${PROGRAM:-$(basename $0)}
 PROGRAM_DIR=$(cd $(dirname "$0"); pwd)
 NAME=$PROGRAM
 DESC="cf simple backup"
-PROCESS_TIME_LIMIT=600
 
 # Load the library and load the configuration file if it exists
 REALPATH=$(readlink "$PROGRAM")
@@ -38,7 +41,7 @@ UMOUNT="sudo umount -f"
 MOUNT="sudo mount"
 BOSH="bosh"
 DBDUMP="pg_dump --clean --create"
-TAR="tar -zcvf"
+TAR="tar -acv --acls --atime-preserve"
 PING="ping -c 3"
 
 # Functions and procedures
@@ -77,26 +80,18 @@ bosh_info() {
     local manifest="$7"
 
     echon_log "Targeting and login microbosh ${host} ... "
-    $BOSH -c "${config}" -u zzz -p zzz target "${host}" >> $PROGRAM_LOG 2>&1 
-    $BOSH -c "${config}" login ${user} ${pass} >> $PROGRAM_LOG 2>&1
+    launch $BOSH -c "${config}" -u zzz -p zzz target "${host}"
+    launch $BOSH -c "${config}" login ${user} ${pass}
     rvalue=$?
-    if [ $rvalue  != 0 ]; then
-        echo "failed!"
-    	error_log "Error, bosh login failed!"
-        return $rvalue
-    fi
+    [ $rvalue  != 0 ] && return $rvalue
     echo "done!"
     echon_log "Getting bosh status ... "
-    $BOSH -c "${config}" status >> $PROGRAM_LOG 2>&1
+    launch $BOSH -c "${config}" status
     rvalue=$?
-    if [ $rvalue  != 0 ]; then
-        echo "failed!"
-    	error_log "Error, bosh status failed!"
-        return $rvalue
-    fi
+    [ $rvalue  != 0 ] && return $rvalue
     echo "ok"
     debug_log "Getting bosh vms: "
-    $BOSH -c "${config}" vms ${dep} | awk '/ postgres_| nfs_/{ print $2"|"$8 }' > "${infor}" 2>&1
+    launch_out $BOSH -c "${config}" vms ${dep} | awk '/ postgres_| nfs_/{ print $2"|"$8 }' > "${infor}"
     rvalue=$?
     if [ $rvalue  != 0 ]; then
         rm -f "${infor}"
@@ -105,16 +100,12 @@ bosh_info() {
     fi
     cat "${infor}" >> $PROGRAM_LOG
     echon_log "Getting bosh manifest for ${dep} ... "
-    $BOSH -c "${config}" download manifest "${dep}" "${manifest}" >> $PROGRAM_LOG  2>&1
+    launch $BOSH -c "${config}" download manifest "${dep}" "${manifest}"
     rvalue=$?
-    if [ $rvalue  != 0 ]; then
-        echo "failed!"
-    	error_log "Error, bosh download manifest failed!"
-        return $rvalue
-    fi
+    [ $rvalue  != 0 ] && return $rvalue
     echo "$(basename ${manifest})"
     debug_log "Bosh logout "
-    $BOSH -c "${config}" logout >> $PROGRAM_LOG 2>&1
+    launch $BOSH -c "${config}" logout
     return $?
 }
 
@@ -139,10 +130,9 @@ dbs_dump() {
         dba=$db
     	echon_log "Dumping database ${db} ... "
         db="postgresql://${user}:${pass}@${host}:5524/${db}?connect_timeout=30"
-        $DBDUMP -f "${dst}.${dba}" -d ${db} >> $PROGRAM_LOG 2>&1
+        launch $DBDUMP -f "${dst}.${dba}" -d ${db}
         rvalue=$?
         if [ $rvalue != 0 ]; then
-             echo "error!"
     	     error_log "DB dump failed!"
              return $rvalue
         fi
@@ -159,13 +149,13 @@ nfs_files() {
     local filelist="$4"
 
     local rvalue=0
-    local target="/tmp/${PROGRAM}_$$_$(date '+%Y%m%d%H%M%S')"
-    local logfile="/tmp/${PROGRAM}_$$_$(date '+%Y%m%d%H%M%S').rsync.log"
+    local exitvalue=0
+    local target="/tmp/${PROGRAM}_$$"
 
-    echon_log "Mounting remote blobstore ... "
+    echon_log "Mounting blobstore ${host}:${remote} on ${target} ... "
     mkdir -p "${target}" && $MOUNT_NFS ${host}:"${remote}" "${target}" 2>&1 | tee -a $PROGRAM_LOG
     rvalue=${PIPESTATUS[0]}
-    if [ $rvalue -eq 0 ]; then
+    if [ $rvalue == 0 ]; then
         echo "done!"
     else
         error_log "Mount failed!"
@@ -173,27 +163,20 @@ nfs_files() {
     fi
     echon_log "Copying files with rsync ... "
     # $RSYNC --filter="merge ${filelist}" --log-file=${logfile} "${target}/" "${dst}/" >>$PROGRAM_LOG 2>&1
-    $RSYNC --include-from="${filelist}" --log-file=${logfile} "${target}/" "${dst}/" >>$PROGRAM_LOG 2>&1
+    launch $RSYNC --include-from="${filelist}" "${target}/" "${dst}/"
     rvalue=$?
-    cat "${logfile}" >> $PROGRAM_LOG
-    if [ $rvalue -eq 0 ]; then
-        echo "done!"
-    else
-        echo "error!"
-        cat "${logfile}"
-    fi
-    rm -f "${logfile}"
-    echon_log "Umounting remote blobstore ... "
+    [ $rvalue == 0 ] && echo "done!"
+    echon_log "Umounting remote blobstore: $UMOUNT ${target} ... "
     $UMOUNT "${target}" >>$PROGRAM_LOG 2>&1
-    rvalue=$?
-    if [ $rvalue  != 0 ]; then
+    exitvalue=$?
+    if [ $exitvalue != 0 ]; then
         echo "failed!"
         error_log "Umount failed!"
-        return $rvalue
     else
         echo "done"
         rm -rf "${target}"
     fi
+    [ $rvalue == 0 ] && return $exitvalue
     return $rvalue
 }
 
@@ -203,24 +186,19 @@ archive() {
     local output="$2"
     local added="$3"
 
-    local logfile="/tmp/${PROGRAM}_$$_$(date '+%Y%m%d%H%M%S').tar.log"
-
     echon_log "Adding extra files: "
     for f in ${added}; do
         echo -n "${f}"
+        echo cp -v "${f}" "${dst}/" >>$PROGRAM_LOG
         cp -v "${f}" "${dst}/" >>$PROGRAM_LOG 2>&1 || echo -n "(failed) " && echo -n " "
     done
     echo
-    echon_log "Creating tgz $output ... "
-    $TAR ${output} ${dst} 2>&1 | tee -a $PROGRAM_LOG > "${logfile}"
-    rvalue=${PIPESTATUS[0]}
-    if [ $rvalue -eq 0 ]; then
-        echo "done!"
-    else
-        echo "error!"
-        cat "${logfile}"
-    fi
-    rm -f "${logfile}"
+    echon_log "Creating $output ... "
+    (
+        cd ${dst} && launch $TAR -f ${output} -C ${dst} *
+    )
+    rvalue=$?
+    [ $rvalue == 0 ] && echo "done!"
     return $rvalue
 }
 
@@ -250,6 +228,8 @@ backup() {
     local nfshost
     local dbhost
 
+    echo_log "Starting backup in ${cache}."
+    mkdir -p "${cache}"
     debug_log "Deleting old bosh config and manifest files ..."
     rm -f "${cache}/"cf_manifest_*.yml >>$PROGRAM_LOG 2>&1
     rm -f "${cache}/"_bosh_config_*.cfg >>$PROGRAM_LOG 2>&1
@@ -271,15 +251,15 @@ backup() {
     fi
     echo "done!"
     echon_log "Pinging ${dbhost} and ${nfshost} ... "
-    $PING ${dbhost} >>$PROGRAM_LOG 2>&1 && $PING ${nfshost} >>$PROGRAM_LOG 2>&1
+    launch $PING ${dbhost} && launch $PING ${nfshost}
     rvalue=$?
     if [ $rvalue != 0 ]; then
-        echo "failed"
         error_log "unable to reach db or nfs hosts!"
         return 1
     fi
     echo "ok"
     echon_log "Checking if ${nfshost}:${remote} is mounted ... "
+    echo $MOUNT | grep -q -e "${nfshost}:${remote}" >>$PROGRAM_LOG
     $MOUNT | grep -q -e "${nfshost}:${remote}"
     rvalue=$?
     if [ $rvalue == 0 ]; then
@@ -303,18 +283,18 @@ backup() {
     fi
     nfs_files ${nfshost} "${remote}" "${rsynccache}" "${tmpfile}"
     rvalue=$?
-    echo $(date '+%Y%m%d%H%M%S') >> "${cache}/_date.control"
+    [ $rvalue == 0 ] && echo $(date '+%Y%m%d%H%M%S') >> "${cache}/_date.control"
     if [ $rvalue == 0 ] && [ ! -z "${output}" ]; then
         archive "${cache}" "${output}" "$(get_list ${addlist})"
         rvalue=$?
     fi
-    debug_log "Copying $PROGRAM_LOG ..."
+    echon_log "Cleaning tmp files and copying logs ... "
     rm -f "${cache}/"*.log
     cp -v "$PROGRAM_LOG" "${cache}/" >>$PROGRAM_LOG 2>&1
     rm -f "${tmpfile}"
+    echo "end"
     return $rvalue
 }
-
 
 
 # Main Program
