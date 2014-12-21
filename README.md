@@ -53,8 +53,7 @@ Run the backup
 
 If something went wrong it will finish with an error (return code not 0) and
 it will show the error log. Moreover, the program only performs the backup if 
-all monit services are in running state (monit summary), avoiding to create
-non consistent backups or running two process simultaneously.
+the CF nfsserver is not mounted on the server.
 
 The script logs almost everything on _/var/log/scripts_ and also includes
 a copy of this logfile within the output tar file.
