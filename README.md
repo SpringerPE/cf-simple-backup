@@ -58,3 +58,63 @@ the CF nfsserver is not mounted on the server.
 The script logs almost everything on _/var/log/scripts_ and also includes
 a copy of this logfile within the output tar file.
 
+
+Recovery
+========
+
+```
+# Gather the IPs of the VMs running postgres and nfs
+$ cd bosh-workspace
+$ ./run-i
+$ bosh vms | awk '/ postgres_| nfs_/{ print $2" --> "$8 }'
+nfs_z1/0 --> 10.230.18.67
+postgres_z1/0 --> 10.230.18.77
+
+# Stop all api_worker, api, nfs and uaa services. Note that depending on your installation there could be more (or less) services than listed below.
+$ bosh deployment $ENV/manifests/$RELASE_VERSION.yml
+$ bosh stop api_worker_z1 --soft
+$ bosh stop api_worker_z2 --soft
+$ bosh stop api_z1 --soft
+$ bosh stop api_z2 --soft
+$ bosh stop nfs_z1 --soft
+$ bosh stop uaa_z1 --soft
+$ bosh stop uaa_z2 --soft
+
+# Log in to nfs server and prepare for restoring the data
+$ ssh -l vcap $NFS_IP
+$ sudo rm -rf /var/vcap/store/*
+$ sudo mkdir /var/vcap/store/tmp
+$ sudo chown vcap.vcap /var/vcap/store/tmp
+
+# Log in to the backup server and copy the nfs data
+$ ssh -i ~/.ssh/nsaadmin -l nsaadmin pe-prod-bosh-management-01.springer-sbm.com
+$ rsync -arzhv /backups/$ENV/cf/cache/store/ vcap@10.230.18.67:/var/vcap/store
+
+# Log in to the nfs server and copy the data into the correct folder
+$ ssh -l vcap 10.230.18.67
+$ sudo mv /var/vcap/store/tmp/* /var/vcap/store/
+$ sudo rmdir /var/vcap/store/tmp/
+
+# Log in to the backup server and copy the postgres dumps to the VM running postgres
+$ ssh -i ~/.ssh/nsaadmin -l nsaadmin pe-prod-bosh-management-01.springer-sbm.com
+$ scp /backups/ENV/cf/cache/dbs/* vcap@10.230.18.77:/var/vcap/store/postgres
+
+# Log in to the postgres VM and restore the dumps
+$ ssh -l vcap 10.230.18.77
+$ cd /var/vcap/store/postgres
+$ sudo /var/vcap/bosh/bin/monit restart postgres  # terminates possible remaining open sessions
+$ /var/vcap/packages/postgres/bin/psql -h 127.0.0.1 -p 5524 -U vcap postgres < $POSTGRES_UAADB  # File e.g. 'postgres_20150210110858.dump.uaadb'
+$ /var/vcap/packages/postgres/bin/psql -h 127.0.0.1 -p 5524 -U vcap postgres < $POSTGRES_CCDB  # File e.g. 'postgres_20150210110858.dump.ccdb'
+$ rm $POSTGRES_UAAB
+$ rm $POSTGRES_CCDB
+
+# Start the services again (order might be important)
+$ cd bosh-workspace
+$ ./run-i
+$ bosh start nfs_z1
+$ bosh stop uaa_z1
+$ bosh stop uaa_z2
+$ bosh start api_z1
+$ bosh start api_worker_z1
+$ bosh start api_worker_z2
+```
