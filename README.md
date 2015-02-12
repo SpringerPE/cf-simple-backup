@@ -71,6 +71,7 @@ nfs_z1/0 --> 10.230.18.67
 postgres_z1/0 --> 10.230.18.77
 
 # Stop all api_worker, api, nfs and uaa services. Note that depending on your installation there could be more (or less) services than listed below.
+# (order might be important)
 $ bosh deployment $ENV/manifests/$RELASE_VERSION.yml
 $ bosh stop api_worker_z1 --soft
 $ bosh stop api_worker_z2 --soft
