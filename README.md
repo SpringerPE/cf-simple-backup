@@ -116,6 +116,7 @@ $ bosh start nfs_z1
 $ bosh start uaa_z1
 $ bosh start uaa_z2
 $ bosh start api_z1
+$ bosh start api_z2
 $ bosh start api_worker_z1
 $ bosh start api_worker_z2
 ```
