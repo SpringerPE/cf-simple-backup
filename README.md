@@ -82,26 +82,26 @@ $ bosh stop uaa_z1 --soft
 $ bosh stop uaa_z2 --soft
 
 # Log in to nfs server and prepare for restoring the data
-$ ssh -l vcap $NFS_IP
+$ ssh -l vcap NFS_IP
 $ sudo rm -rf /var/vcap/store/*
 $ sudo mkdir /var/vcap/store/tmp
 $ sudo chown vcap.vcap /var/vcap/store/tmp
 
 # Log in to the backup server and copy the nfs data
 $ ssh -i ~/.ssh/nsaadmin -l nsaadmin pe-prod-bosh-management-01.springer-sbm.com
-$ rsync -arzhv /backups/$ENV/cf/cache/store/ vcap@10.230.18.67:/var/vcap/store
+$ rsync -arzhv /backups/ENV/cf/cache/store/ vcap@NFS_IP:/var/vcap/store/tmp
 
 # Log in to the nfs server and copy the data into the correct folder
-$ ssh -l vcap 10.230.18.67
+$ ssh -l vcap NFS_IP
 $ sudo mv /var/vcap/store/tmp/* /var/vcap/store/
 $ sudo rmdir /var/vcap/store/tmp/
 
 # Log in to the backup server and copy the postgres dumps to the VM running postgres
 $ ssh -i ~/.ssh/nsaadmin -l nsaadmin pe-prod-bosh-management-01.springer-sbm.com
-$ scp /backups/ENV/cf/cache/dbs/* vcap@10.230.18.77:/var/vcap/store/postgres
+$ scp /backups/ENV/cf/cache/dbs/* vcap@POSTGRES_IP:/var/vcap/store/postgres
 
 # Log in to the postgres VM and restore the dumps
-$ ssh -l vcap 10.230.18.77
+$ ssh -l vcap POSTGRES_IP
 $ cd /var/vcap/store/postgres
 $ sudo /var/vcap/bosh/bin/monit restart postgres  # terminates possible remaining open sessions
 $ /var/vcap/packages/postgres/bin/psql -h 127.0.0.1 -p 5524 -U vcap postgres < $POSTGRES_UAADB  # File e.g. 'postgres_20150210110858.dump.uaadb'
