@@ -62,17 +62,19 @@ a copy of this logfile within the output tar file.
 Recovery
 ========
 
+Notes:
+* BOSH_WORKSPACE is a place where you can run the bosh client `bosh` and you have your manifests around.
+
 ```
 # Gather the IPs of the VMs running postgres and nfs
-$ cd bosh-workspace
-$ ./run-i
+$ cd BOSH_WORKSPACE
 $ bosh vms | awk '/ postgres_| nfs_/{ print $2" --> "$8 }'
-nfs_z1/0 --> 10.230.18.67
-postgres_z1/0 --> 10.230.18.77
+nfs_z1/0 --> n.n.n.n
+postgres_z1/0 --> n.n.n.n
 
 # Stop all api_worker, api, nfs and uaa services. Note that depending on your installation there could be more (or less) services than listed below.
 # (order might be important)
-$ bosh deployment $ENV/manifests/$RELASE_VERSION.yml
+$ bosh deployment ENV/manifests/RELASE_VERSION.yml
 $ bosh stop api_z1 --soft
 $ bosh stop api_z2 --soft
 $ bosh stop api_worker_z1 --soft
@@ -88,7 +90,7 @@ $ sudo mkdir /var/vcap/store/tmp
 $ sudo chown vcap.vcap /var/vcap/store/tmp
 
 # Log in to the backup server and copy the nfs data
-$ ssh -i ~/.ssh/nsaadmin -l nsaadmin pe-prod-bosh-management-01.springer-sbm.com
+$ ssh BACKUP_SERVER
 $ rsync -arzhv /backups/ENV/cf/cache/store/ vcap@NFS_IP:/var/vcap/store/tmp
 
 # Log in to the nfs server and copy the data into the correct folder
@@ -97,7 +99,7 @@ $ sudo mv /var/vcap/store/tmp/* /var/vcap/store/
 $ sudo rmdir /var/vcap/store/tmp/
 
 # Log in to the backup server and copy the postgres dumps to the VM running postgres
-$ ssh -i ~/.ssh/nsaadmin -l nsaadmin pe-prod-bosh-management-01.springer-sbm.com
+$ ssh BACKUP_SERVER
 $ scp /backups/ENV/cf/cache/dbs/* vcap@POSTGRES_IP:/var/vcap/store/postgres
 
 # Log in to the postgres VM and restore the dumps
@@ -110,8 +112,7 @@ $ rm $POSTGRES_UAAB
 $ rm $POSTGRES_CCDB
 
 # Start the services again (order might be important)
-$ cd bosh-workspace
-$ ./run-i
+$ cd BOSH_WORKSPACE
 $ bosh start nfs_z1
 $ bosh start uaa_z1
 $ bosh start uaa_z2
