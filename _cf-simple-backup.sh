@@ -81,6 +81,7 @@ bosh_info() {
 
     echon_log "Targeting and login microbosh ${host} ... "
     launch $BOSH -c "${config}" -u ${user} -p ${pass} target "${host}"
+    launch $BOSH -c "${config}" login ${user} ${pass}
     rvalue=$?
     [ $rvalue  != 0 ] && return $rvalue
     echo "done!"
