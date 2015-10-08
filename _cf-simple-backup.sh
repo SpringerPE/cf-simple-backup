@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # cf simple backup
-# (c) 2014 Jose Riguera <jose.riguera@springer.com>
+# (c) 2014-2015 Jose Riguera <jose.riguera@springer.com>
 # Licensed under GPLv3
 
 # First we need to setup the Global variables, only if their default values
@@ -240,53 +240,70 @@ backup() {
         rm -f "${hostsfile}"
         return 1
     fi
-    echon_log "Locating db and nfs hosts ... "
+    echon_log "Locating postgres and nfs hosts: "
     dbhost=$(grep -e "^postgres_" "${hostsfile}" | head -n 1 | cut -d'|' -f 2)
     nfshost=$(grep -e "^nfs_" "${hostsfile}" | head -n 1 | cut -d'|' -f 2)
     rm -f "${hostsfile}"
-    if [ -z "${dbhost}" ] || [ -z "${nfshost}" ]; then
-        echo "failed!"
-        error_log "unable to find nfs and db host on cf environment"
-        return 1
-    fi
-    echo "done!"
-    echon_log "Pinging ${dbhost} and ${nfshost} ... "
-    launch $PING ${dbhost} && launch $PING ${nfshost}
-    rvalue=$?
-    if [ $rvalue != 0 ]; then
-        error_log "unable to reach db or nfs hosts!"
-        return 1
-    fi
-    echo "ok"
-    echon_log "Checking if ${nfshost}:${remote} is mounted ... "
-    echo $MOUNT | grep -q -e "${nfshost}:${remote}" >>$PROGRAM_LOG
-    $MOUNT | grep -q -e "${nfshost}:${remote}"
-    rvalue=$?
-    if [ $rvalue == 0 ]; then
-        echo "mounted!"
-        error_log "aborting backup ... is it already mounted?, is another backup running?"
-        return 1
-    fi
-    echo "ok, not mounted"
-    debug_log "Removing old db backups ... "
-    rm -rf "${dbdir}" >>$PROGRAM_LOG 2>&1
-    debug_log "Creating backup dir ... "
-    mkdir -p "${dbdir}" >>$PROGRAM_LOG 2>&1
-    debug_log "Preparing list of files ... "
-    get_list "${filelist}" | tee -a $PROGRAM_LOG > $tmpfile
-    # starting main things
-    dbs_dump ${dbhost} "${dbdump}" "${dbs}"
-    rvalue=$?
-    if [ $rvalue != 0 ]; then
-        rm -f "${tmpfile}"
-        return $rvalue
-    fi
-    nfs_files ${nfshost} "${remote}" "${rsynccache}" "${tmpfile}"
-    rvalue=$?
-    [ $rvalue == 0 ] && echo $(date '+%Y%m%d%H%M%S') >> "${cache}/_date.control"
-    if [ $rvalue == 0 ] && [ ! -z "${output}" ]; then
-        archive "${cache}" "${output}" "$(get_list ${addlist})"
+    echo "postgres=${dbhost} nfshost=${nfshost} ."
+    rvalue=0
+    # DB dump
+    if [ ! -z "${dbhost}" ]; then
+        echon_log "Pinging ${dbhost} ... "
+        launch $PING ${dbhost}
         rvalue=$?
+        if [ $rvalue != 0 ]; then
+            error_log "unable to reach postgres server!"
+            return 1
+        fi
+        echo "ok"
+        debug_log "Removing old db backups ... "
+        rm -rf "${dbdir}" >>$PROGRAM_LOG 2>&1
+        debug_log "Creating backup dir ... "
+        mkdir -p "${dbdir}" >>$PROGRAM_LOG 2>&1
+        # starting main things
+        dbs_dump ${dbhost} "${dbdump}" "${dbs}"
+        rvalue=$?
+        if [ $rvalue != 0 ]; then
+            rm -f "${tmpfile}"
+            return $rvalue
+        fi
+    else
+        echo_log "Warning! no postgres host found in the environment ... ignoring it!"
+        #return 1
+    fi
+    # NFS blobstore dump
+    if [ ! -z "${nfshost}" ]; then
+        echon_log "Pinging ${nfshost} ... "
+        launch $PING ${nfshost}
+        rvalue=$?
+        if [ $rvalue != 0 ]; then
+            error_log "unable to reach nfs host!"
+            return 1
+        fi
+        echo "ok"
+        echon_log "Checking if ${nfshost}:${remote} is mounted ... "
+        echo $MOUNT | grep -q -e "${nfshost}:${remote}" >>$PROGRAM_LOG
+        $MOUNT | grep -q -e "${nfshost}:${remote}"
+        rvalue=$?
+        if [ $rvalue == 0 ]; then
+            echo "mounted!"
+            error_log "aborting backup ... is it already mounted?, is another backup running?"
+            return 1
+        fi
+        echo "ok, not mounted"
+        debug_log "Preparing list of files ... "
+        get_list "${filelist}" | tee -a $PROGRAM_LOG > $tmpfile
+
+        nfs_files ${nfshost} "${remote}" "${rsynccache}" "${tmpfile}"
+        rvalue=$?
+        [ $rvalue == 0 ] && echo $(date '+%Y%m%d%H%M%S') >> "${cache}/_date.control"
+        if [ $rvalue == 0 ] && [ ! -z "${output}" ]; then
+            archive "${cache}" "${output}" "$(get_list ${addlist})"
+            rvalue=$?
+        fi
+    else
+        echo_log "Warning! No nfs server found in the environment ... ignoring it!"
+        #return 1
     fi
     echon_log "Cleaning tmp files and copying logs ... "
     rm -f "${cache}/"*.log
