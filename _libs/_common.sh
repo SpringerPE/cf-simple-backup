@@ -34,6 +34,11 @@ PROGRAM_LOG="${LOG_PATH}/${PROGRAM}_${PROGRAM_HOST}_$(date '+%F-%H%M%S').log"
 PROGRAM_CONF=""
 PROGRAM_LIB="$PROGRAM_DIR/_libs"
 
+# Enable Sentry for error tracking (requires 'raven-bash' from https://github.com/hareevs/raven-bash)
+if [ -f /etc/raven-bash.conf ]; then
+  source raven-bash
+fi
+
 # Load Springer base lib
 REALPATH=${REALPATH:-$(dirname "$(readlink $PROGRAM)")}
 [ ! -z "$REALPATH" ] && PROGRAM_LIB="$REALPATH/_libs" || PROGRAM_LIB="$PROGRAM_DIR/_libs"
